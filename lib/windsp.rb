@@ -96,3 +96,27 @@ module Kernel
   end
   module_function :open
 end
+
+class << IO
+  alias windsp_orig_write write
+  def write(name, data, offset = nil)
+    if name == "/dev/dsp"
+      WinDSP.open do |dsp|
+        dsp.write(data)
+      end
+    else
+      windsp_orig_binwrite(path, data, offset)
+    end
+  end
+
+  alias windsp_orig_binwrite binwrite
+  def binwrite(name, data, offset = nil)
+    if name == "/dev/dsp"
+      WinDSP.open do |dsp|
+        dsp.binwrite(data)
+      end
+    else
+      windsp_orig_binwrite(path, data, offset)
+    end
+  end
+end
