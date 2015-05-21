@@ -4,39 +4,26 @@ class WinDSP
   module WinMM
     extend Fiddle::Importer
     dlload "winmm.dll"
-    extern "int PlaySound(void *, void *, long)"
-
-    SND_SYNC = 0x0000
-    SND_ASYNC = 0x0001
-    SND_NODEFAULT = 0x0002
-    SND_MEMORY = 0x0004
-    SND_LOOP = 0x0008
-    SND_NOSTOP = 0x0010
-    SND_NOWAIT = 0x00002000
-    SND_ALIAS = 0x00010000
-    SND_ALIAS_ID = 0x00110000
-    SND_FILENAME = 0x00020000
-    SND_RESOURCE = 0x00040004
-    SND_PURGE = 0x0040
-    SND_APPLICATION = 0x0080
-    SND_SENTRY = 0x00080000
-    SND_RING = 0x00100000
-    SND_SYSTEM = 0x00200000
-
-    def self.make_wave(pcm)
-      head = ["WAVEfmt ", 16, 1, 1, 8000, 8000 * 1 * 1, 1 * 1, 8].pack('a*VvvVVvv')
-      data = ["data", pcm.bytesize, pcm].pack('a*Va*')
-      ["RIFF", head.bytesize + data.bytesize, head, data].pack('a*Va*a*')
+    if /64/ =~ RUBY_PLATFORM
+      int_ptr = "long long"
+    else
+      int_ptr = "long"
     end
+    extern "int waveOutOpen(void *, #{int_ptr}, void *, #{int_ptr}, #{int_ptr}, long)"
+    extern "int waveOutClose(#{int_ptr})"
+    extern "int waveOutPrepareHeader(#{int_ptr}, void *, int)"
+    extern "int waveOutUnprepareHeader(#{int_ptr}, void *, int)"
+    extern "int waveOutWrite(#{int_ptr}, void *, int)"
+    extern "int waveOutGetPosition(#{int_ptr}, void *, int)"
 
-    def self.play_pcm(pcm, sync: true)
-      flags = SND_NODEFAULT | SND_MEMORY
-      flags |= SND_ASYNC unless sync
-      PlaySound(make_wave(pcm), nil, flags)
-    end
+    WAVE_FORMAT_PCM = 1
+    WAVE_ALLOWSYNC = 0x0002
+    WAVE_MAPPED = 0x0004
+    WHDR_DONE = 0x00000001
+    WHDR_INQUEUE = 0x00000010
   end
 
-  VERSION = "0.0.1"
+  VERSION = "0.0.2"
 
   def self.open(*rest, &block)
     io = self.new(rest)
@@ -51,28 +38,60 @@ class WinDSP
     end
   end
 
+  CHANNELS = 1
+  BITS = 8
+  FREQUENCY = 8000
+
   def initialize(*rest)
-    @buf = ""
+    tmp = "\0" * 8
+    form = [WinMM::WAVE_FORMAT_PCM, CHANNELS, FREQUENCY, rate, (BITS / 8) * CHANNELS, BITS, 0].pack("vvVVvvv")
+    ret = WinMM.waveOutOpen(tmp, 0, form, 0, 0, WinMM::WAVE_ALLOWSYNC | WinMM::WAVE_MAPPED)
+    raise "cannot open wave device: #{ret}" if ret != 0
+    if /64/ =~ RUBY_PLATFORM
+      @handle, = tmp.unpack("Q!")
+    else
+      @handle, = tmp.unpack("L!")
+    end
+    @buffer = ""
   end
 
   def close
     flush
-    WinMM.PlaySound(nil, nil, 0)
+    WinMM.waveOutClose(@handle)
   end
 
   def flush
-    if @buf.bytesize >= 0
-      until WinMM.play_pcm(@buf, sync: false)
-        sleep 0.1
-      end
+    if /64/ =~ RUBY_PLATFORM
+      x = "Q!"
+    else
+      x = "L!"
     end
-    @buf = ""
-    WinMM.play_pcm("", sync: true)
+    hdr = [@buffer, @buffer.bytesize, 0, 0, 0, 0, nil, 0].pack("pVV#{x}VVp#{x}")
+    @buffer = ""
+    ret = WinMM.waveOutPrepareHeader(@handle, hdr, hdr.bytesize)
+    raise "error in waveOutPrepareHeader: #{ret}" if ret != 0
+    begin
+      ret = WinMM.waveOutWrite(@handle, hdr, hdr.bytesize)
+      raise "error in waveOutWrite: #{ret}" if ret != 0
+      while true
+        break if (hdr.unpack("pVV#{x}VVp#{x}")[4] & WinMM::WHDR_DONE) == WinMM::WHDR_DONE
+        sleep 0
+      end
+    ensure
+      WinMM.waveOutUnprepareHeader(@handle, hdr, hdr.bytesize)
+    end
+
+    self
   end
 
+  BUFFER_FLUSH_SEC = 30
   def write(str)
-    @buf << str
-    flush if @buf.bytesize > 8000 * 1 * 1 * 4
+    @buffer << str
+    flush if @buffer.bytesize >= BUFFER_FLUSH_SEC * rate
+  end
+
+  def rate
+    FREQUENCY * (BITS / 8) * CHANNELS
   end
 
   alias binwrite write
