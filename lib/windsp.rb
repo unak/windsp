@@ -1,6 +1,8 @@
 require 'fiddle/import'
 
 class WinDSP
+  VERSION = "0.0.3"
+
   module WinMM
     extend Fiddle::Importer
     dlload "winmm.dll"
@@ -22,8 +24,6 @@ class WinDSP
     WHDR_DONE = 0x00000001
     WHDR_INQUEUE = 0x00000010
   end
-
-  VERSION = "0.0.2"
 
   def self.open(*rest, &block)
     io = self.new(rest)
@@ -52,12 +52,30 @@ class WinDSP
     else
       @handle, = tmp.unpack("L!")
     end
+    @hdr = nil
     @buffer = ""
   end
 
   def close
     flush
+    if @hdr
+      wait(@hdr)
+      WinMM.waveOutUnprepareHeader(@handle, @hdr, @hdr.bytesize)
+      @hdr = nil
+    end
     WinMM.waveOutClose(@handle)
+  end
+
+  def wait(hdr)
+    if /64/ =~ RUBY_PLATFORM
+      x = "Q!"
+    else
+      x = "L!"
+    end
+    while true
+      break if (hdr.unpack("pVV#{x}VVp#{x}")[4] & WinMM::WHDR_DONE) == WinMM::WHDR_DONE
+      sleep 0
+    end
   end
 
   def flush
@@ -70,21 +88,19 @@ class WinDSP
     @buffer = ""
     ret = WinMM.waveOutPrepareHeader(@handle, hdr, hdr.bytesize)
     raise "error in waveOutPrepareHeader: #{ret}" if ret != 0
-    begin
-      ret = WinMM.waveOutWrite(@handle, hdr, hdr.bytesize)
-      raise "error in waveOutWrite: #{ret}" if ret != 0
-      while true
-        break if (hdr.unpack("pVV#{x}VVp#{x}")[4] & WinMM::WHDR_DONE) == WinMM::WHDR_DONE
-        sleep 0
-      end
-    ensure
-      WinMM.waveOutUnprepareHeader(@handle, hdr, hdr.bytesize)
+    if @hdr
+      wait(@hdr)
+      WinMM.waveOutUnprepareHeader(@handle, @hdr, @hdr.bytesize)
+      @hdr = nil
     end
+    ret = WinMM.waveOutWrite(@handle, hdr, hdr.bytesize)
+    raise "error in waveOutWrite: #{ret}" if ret != 0
+    @hdr = hdr
 
     self
   end
 
-  BUFFER_FLUSH_SEC = 30
+  BUFFER_FLUSH_SEC = 4
   def write(str)
     @buffer << str
     flush if @buffer.bytesize >= BUFFER_FLUSH_SEC * rate
