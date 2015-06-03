@@ -1,22 +1,22 @@
 require 'fiddle/import'
 
 class WinDSP
-  VERSION = "0.0.3"
+  VERSION = "0.0.4"
 
   module WinMM
     extend Fiddle::Importer
     dlload "winmm.dll"
     if /64/ =~ RUBY_PLATFORM
-      int_ptr = "long long"
+      PACK = "Q!"
     else
-      int_ptr = "long"
+      PACK = "L!"
     end
-    extern "int waveOutOpen(void *, #{int_ptr}, void *, #{int_ptr}, #{int_ptr}, long)"
-    extern "int waveOutClose(#{int_ptr})"
-    extern "int waveOutPrepareHeader(#{int_ptr}, void *, int)"
-    extern "int waveOutUnprepareHeader(#{int_ptr}, void *, int)"
-    extern "int waveOutWrite(#{int_ptr}, void *, int)"
-    extern "int waveOutGetPosition(#{int_ptr}, void *, int)"
+    extern "int waveOutOpen(void *, intptr_t, void *, intptr_t, intptr_t, long)"
+    extern "int waveOutClose(intptr_t)"
+    extern "int waveOutPrepareHeader(intptr_t, void *, int)"
+    extern "int waveOutUnprepareHeader(intptr_t, void *, int)"
+    extern "int waveOutWrite(intptr_t, void *, int)"
+    extern "int waveOutGetPosition(intptr_t, void *, int)"
 
     WAVE_FORMAT_PCM = 1
     WAVE_ALLOWSYNC = 0x0002
@@ -47,11 +47,7 @@ class WinDSP
     form = [WinMM::WAVE_FORMAT_PCM, CHANNELS, FREQUENCY, rate, (BITS / 8) * CHANNELS, BITS, 0].pack("vvVVvvv")
     ret = WinMM.waveOutOpen(tmp, 0, form, 0, 0, WinMM::WAVE_ALLOWSYNC | WinMM::WAVE_MAPPED)
     raise "cannot open wave device: #{ret}" if ret != 0
-    if /64/ =~ RUBY_PLATFORM
-      @handle, = tmp.unpack("Q!")
-    else
-      @handle, = tmp.unpack("L!")
-    end
+    @handle, = tmp.unpack(WinMM::PACK)
     @hdr = nil
     @buffer = ""
   end
@@ -67,24 +63,14 @@ class WinDSP
   end
 
   def wait(hdr)
-    if /64/ =~ RUBY_PLATFORM
-      x = "Q!"
-    else
-      x = "L!"
-    end
     while true
-      break if (hdr.unpack("pVV#{x}VVp#{x}")[4] & WinMM::WHDR_DONE) == WinMM::WHDR_DONE
+      break if (hdr.unpack("pVV#{WinMM::PACK}VVp#{WinMM::PACK}")[4] & WinMM::WHDR_DONE) == WinMM::WHDR_DONE
       sleep 0
     end
   end
 
   def flush
-    if /64/ =~ RUBY_PLATFORM
-      x = "Q!"
-    else
-      x = "L!"
-    end
-    hdr = [@buffer, @buffer.bytesize, 0, 0, 0, 0, nil, 0].pack("pVV#{x}VVp#{x}")
+    hdr = [@buffer, @buffer.bytesize, 0, 0, 0, 0, nil, 0].pack("pVV#{WinMM::PACK}VVp#{WinMM::PACK}")
     @buffer = ""
     ret = WinMM.waveOutPrepareHeader(@handle, hdr, hdr.bytesize)
     raise "error in waveOutPrepareHeader: #{ret}" if ret != 0
